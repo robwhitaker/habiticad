@@ -1,0 +1,109 @@
+cabal-version:       2.4
+name:                habiticad
+version:             0.0.0.0
+synopsis:            Daemon that listens for dbus events and launches Habitica requests
+description:         Daemon that listens for dbus events and launches Habitica requests
+license:             BSD-3-Clause
+license-file:        LICENSE
+author:              Rob Whitaker
+maintainer:          Rob Whitaker <dev@robwhitaker.com>
+copyright:           2021 Rob Whitaker
+category:            Application
+build-type:          Simple
+extra-doc-files:     README.md
+
+common common-options
+  build-depends:       base
+                     , containers
+                     , record-dot-preprocessor
+                     , record-hasfield
+                     , relude
+                     , text
+
+  mixins:              base hiding (Prelude)
+                     , relude (Relude as Prelude)
+
+  default-extensions:  AllowAmbiguousTypes
+                     , BangPatterns
+                     , ConstraintKinds
+                     , DataKinds
+                     , DeriveAnyClass
+                     , DeriveFoldable
+                     , DeriveFunctor
+                     , DeriveGeneric
+                     , DeriveLift
+                     , DeriveTraversable
+                     , DerivingStrategies
+                     , DoAndIfThenElse
+                     , EmptyCase
+                     , EmptyDataDecls
+                     , ExistentialQuantification
+                     , FlexibleContexts
+                     , FlexibleInstances
+                     , FunctionalDependencies
+                     , GADTs
+                     , GeneralizedNewtypeDeriving
+                     , KindSignatures
+                     , LambdaCase
+                     , MultiParamTypeClasses
+                     , MultiWayIf
+                     , NamedFieldPuns
+                     , NamedWildCards
+                     , NumericUnderscores
+                     , OverloadedStrings
+                     , RankNTypes
+                     , ScopedTypeVariables
+                     , StandaloneDeriving
+                     , TupleSections
+                     , TypeApplications
+                     , TypeFamilies
+                     , TypeOperators
+                     , ViewPatterns
+
+  ghc-options:         -Wall
+                       -Wcompat
+                       -Widentities
+                       -Wincomplete-uni-patterns
+                       -Wincomplete-record-updates
+                       -fwarn-tabs
+                       -Werror
+                       -Wwarn=unused-imports
+                       -Wwarn=unused-local-binds
+                       -Wwarn=unused-matches
+                       -Wwarn=deprecations
+
+                       -freverse-errors
+
+                       -F -pgmF=record-dot-preprocessor
+
+                       -ddump-minimal-imports
+  if impl(ghc >= 8.0)
+    ghc-options:       -Wredundant-constraints
+                       -Wwarn=redundant-constraints
+  if impl(ghc >= 8.2)
+    ghc-options:       -fhide-source-paths
+  if impl(ghc >= 8.4)
+    ghc-options:       -Wmissing-export-lists
+                       -Wwarn=missing-export-lists
+                       -Wpartial-fields
+  if impl(ghc >= 8.8)
+    ghc-options:       -Wmissing-deriving-strategies
+
+                       -fwrite-ide-info
+                       -hiedir=.hie
+  if impl(ghc >= 8.10)
+    ghc-options:       -Wunused-packages
+                       -Wwarn=unused-packages
+
+  default-language:    Haskell2010
+
+executable habiticad
+  import:              common-options
+  hs-source-dirs:      app
+                     , src
+  main-is:             Main.hs
+
+  ghc-options:         -O2
+                       -threaded
+                       -rtsopts
+                       -with-rtsopts=-N

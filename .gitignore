@@ -1,0 +1,13 @@
+# Cabal output
+cabal.project.local*
+dist/
+dist-newstyle/
+
+# Nix output
+result
+
+# Direnv
+.direnv/
+
+# Hie
+.hie/

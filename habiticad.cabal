@@ -1,6 +1,6 @@
 cabal-version:       2.4
 name:                habiticad
-version:             0.0.0.0
+version:             1.0.0
 synopsis:            Daemon that listens for dbus events and launches Habitica requests
 description:         Daemon that listens for dbus events and launches Habitica requests
 license:             BSD-3-Clause
@@ -11,13 +11,16 @@ copyright:           2021 Rob Whitaker
 category:            Application
 build-type:          Simple
 extra-doc-files:     README.md
+data-files:          assets/images/habitica.png
 
 common common-options
-  build-depends:       base
-                     , containers
-                     , record-dot-preprocessor
-                     , record-hasfield
+  build-depends:       aeson
+                     , base
+                     , dbus
+                     , fdo-notify
+                     , process
                      , relude
+                     , req
                      , text
 
   mixins:              base hiding (Prelude)
@@ -74,8 +77,6 @@ common common-options
 
                        -freverse-errors
 
-                       -F -pgmF=record-dot-preprocessor
-
                        -ddump-minimal-imports
   if impl(ghc >= 8.0)
     ghc-options:       -Wredundant-constraints
@@ -99,8 +100,8 @@ common common-options
 
 executable habiticad
   import:              common-options
+  other-modules:       Paths_habiticad
   hs-source-dirs:      app
-                     , src
   main-is:             Main.hs
 
   ghc-options:         -O2

@@ -15,6 +15,7 @@ import Network.HTTP.Req (POST (..), (/:))
 import qualified Network.HTTP.Req as Req
 import Paths_habiticad
 import System.Exit (ExitCode (ExitSuccess))
+import System.IO (BufferMode (LineBuffering), hSetBuffering)
 import System.IO.Error (userError)
 import qualified System.Process as Process
 
@@ -235,6 +236,7 @@ errorLog txt = liftIO $ putTextLn $ "[ERR]  " <> txt
 
 main :: IO ()
 main = do
+  hSetBuffering stdout LineBuffering
   infoLog "Starting up"
   infoLog "Connecting to DBus"
   client <- DBus.connectSession

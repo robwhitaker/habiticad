@@ -11,7 +11,7 @@ import qualified DBus.Notify as Notify
 import Data.Aeson (FromJSON, ToJSON, (.:), (.:?), (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.List as List
-import Network.HTTP.Req (POST (..), (/:))
+import Network.HTTP.Req (GET (GET), POST (..), (/:))
 import qualified Network.HTTP.Req as Req
 import Paths_habiticad
 import System.Exit (ExitCode (ExitSuccess))
@@ -25,6 +25,22 @@ habiticaApi :: Req.Url 'Req.Https
 habiticaApi = Req.https "habitica.com" /: "api" /: "v3"
 
 -- DATA TYPES --
+
+data PlayerData = PlayerData
+  { playerGold :: Double,
+    playerExp :: Double,
+    playerLevel :: Int,
+    playerExpNeeded :: Maybe Double
+  }
+  deriving stock (Show, Eq, Ord)
+
+instance FromJSON PlayerData where
+  parseJSON = Aeson.withObject "PlayerData" $ \o -> do
+    playerGold <- o .: "gp"
+    playerExp <- o .: "exp"
+    playerLevel <- o .: "lvl"
+    playerExpNeeded <- o .:? "toNextLevel"
+    pure PlayerData {playerGold, playerExp, playerLevel, playerExpNeeded}
 
 data Difficulty
   = Trivial
@@ -91,22 +107,25 @@ instance FromJSON QuestProgress where
 
 data ScoreResult = ScoreResult
   { scoreDrop :: Maybe Text,
-    scoreQuestProgress :: Maybe QuestProgress
+    scoreQuestProgress :: Maybe QuestProgress,
+    scorePlayerData :: PlayerData
   }
   deriving stock (Show, Eq, Ord)
 
 instance FromJSON ScoreResult where
   parseJSON = Aeson.withObject "ScoreResult" $ \o -> do
     mbTmp <- o .:? "_tmp"
-    case mbTmp of
-      Nothing -> pure $ ScoreResult Nothing Nothing
+    (scoreDrop, scoreQuestProgress) <- case mbTmp of
+      Nothing -> pure (Nothing, Nothing)
       Just tmp -> do
         mbDrop <- tmp .:? "drop"
         scoreDrop <- case mbDrop of
           Nothing -> pure Nothing
           Just hdrop -> Just <$> hdrop .: "dialog"
         scoreQuestProgress <- tmp .:? "quest"
-        pure ScoreResult {scoreDrop, scoreQuestProgress}
+        pure (scoreDrop, scoreQuestProgress)
+    scorePlayerData <- Aeson.parseJSON (Aeson.Object o)
+    pure ScoreResult {scoreDrop, scoreQuestProgress, scorePlayerData}
 
 headersToOption :: HabiticaHeaders -> Req.Option 'Req.Https
 headersToOption HabiticaHeaders {headersUserId, headersApiKey} =
@@ -133,8 +152,8 @@ bold = mapNotifyBody Notify.Bold
 
 -- MAIN --
 
-notify :: ScoreResult -> IO ()
-notify scoreResult = do
+notify :: PlayerData -> ScoreResult -> IO ()
+notify oldPlayerData scoreResult = do
   client <- Notify.connectSession
   iconPath <- getDataFileName "assets/images/habitica.png"
   case scoreDrop scoreResult of
@@ -143,6 +162,7 @@ notify scoreResult = do
   case scoreQuestProgress scoreResult of
     Nothing -> pass
     Just questProgress -> void $ Notify.notify client (questProgressToNote iconPath questProgress)
+  void $ Notify.notify client (playerDataChanges iconPath)
   where
     dropToNote iconPath dropText =
       Notify.blankNote
@@ -165,13 +185,92 @@ notify scoreResult = do
                   Nothing -> ""
              in Just . unNotifyBody $ collected <> damage
         }
+    playerDataChanges iconPath =
+      Notify.blankNote
+        { Notify.appName = "habitica",
+          Notify.summary = "Character Progress",
+          Notify.appImage = Just (Notify.File iconPath),
+          Notify.body =
+            let double :: Double -> Double
+                double n = fromIntegral @Int @Double (floor (n * 100)) / 100
+
+                int :: Double -> Int
+                int = floor
+
+                signed :: (Num a, Ord a, Show a) => a -> NotifyBody
+                signed n =
+                  if n >= 0
+                    then "+" <> show n
+                    else "-" <> show n
+
+                unsigned :: (Show a) => a -> NotifyBody
+                unsigned = show
+
+                newPlayerData = scorePlayerData scoreResult
+                newLevel = playerLevel newPlayerData
+
+                goldDiffStr =
+                  (signed . double) (playerGold newPlayerData - playerGold oldPlayerData)
+                    <> " ("
+                    <> (unsigned . int) (playerGold newPlayerData)
+                    <> ")"
+                levelDiff = playerLevel newPlayerData - playerLevel oldPlayerData
+                levelProgressStr =
+                  case playerExpNeeded newPlayerData of
+                    Nothing -> ""
+                    Just toNextLevel ->
+                      " ("
+                        <> (unsigned . int) (playerExp newPlayerData)
+                        <> "/"
+                        <> (unsigned . int) (playerExp newPlayerData + toNextLevel)
+                        <> ")"
+                expDiffStr =
+                  if
+                      | levelDiff == 0 ->
+                        bold "Exp: "
+                          <> (signed . double) (playerExp newPlayerData - playerExp oldPlayerData)
+                          <> levelProgressStr
+                      | levelDiff > 0 ->
+                        "\n" <> bold "You leveled up!" <> " New level: " <> show newLevel <> "."
+                      | otherwise ->
+                        "\n" <> bold "You lost a level..." <> " New level: " <> show newLevel <> "."
+             in Just . unNotifyBody $ bold "Gold: " <> goldDiffStr <> "\n" <> expDiffStr
+        }
 
     prettyNumber :: Double -> NotifyBody
     prettyNumber num = show @NotifyBody @Double $ fromIntegral @Int (round (num * 100)) / 100
 
-scoreTaskWithDifficulty :: HabiticaHeaders -> Difficulty -> IO ()
-scoreTaskWithDifficulty headers difficulty = Req.runReq httpConfig $ do
+newtype PlayerDataFromStats = PlayerDataFromStats PlayerData
+
+instance FromJSON PlayerDataFromStats where
+  parseJSON = Aeson.withObject "PlayerDataFromStats" $ \o -> do
+    stats <- o .: "stats"
+    playerData <- Aeson.parseJSON (Aeson.Object stats)
+    pure $ PlayerDataFromStats playerData
+
+getInitialPlayerData :: HabiticaHeaders -> IO PlayerData
+getInitialPlayerData headers = Req.runReq httpConfig $ do
+  infoLog "[Habitica] Fetching player data (gold, exp, level) from Habitica"
+  let memberId = decodeUtf8 $ headersUserId headers
+  res <-
+    Req.req
+      GET
+      (habiticaApi /: "members" /: memberId)
+      Req.NoReqBody
+      Req.jsonResponse
+      (headersToOption headers)
+  case Req.responseBody res of
+    Failure msg -> do
+      errorLog $ "[Habitica] " <> msg
+      liftIO $ throwIO (userError "Failed to obtain initial player data")
+    Data (PlayerDataFromStats playerData) -> do
+      infoLog $ "[Habitica] " <> show playerData
+      pure playerData
+
+scoreTaskWithDifficulty :: HabiticaHeaders -> IORef PlayerData -> Difficulty -> IO ()
+scoreTaskWithDifficulty headers playerData difficulty = Req.runReq httpConfig $ do
   infoLog $ "[Habitica] Creating task with difficulty " <> show difficulty
+  oldPlayerData <- readIORef playerData
   res <-
     Req.req
       POST
@@ -195,23 +294,45 @@ scoreTaskWithDifficulty headers difficulty = Req.runReq httpConfig $ do
         Failure msg -> errorLog $ "[Habitica] " <> msg
         Data scoreResult -> do
           infoLog $ "[Habitica] " <> show scoreResult
-          liftIO $ notify scoreResult
+          newPlayerData <- updatePlayerData headers playerData (scorePlayerData scoreResult)
+          liftIO $ notify oldPlayerData (scoreResult {scorePlayerData = newPlayerData})
   where
     todo =
       Todo
         { todoText = "Some " <> show difficulty <> " task",
           todoDifficulty = difficulty
         }
-    httpConfig =
-      Req.defaultHttpConfig
-        { Req.httpConfigCheckResponse = \_ _ _ -> Nothing
-        }
 
-onHabitProgress :: HabiticaHeaders -> DBus.Signal -> IO ()
-onHabitProgress headers signal = case DBus.signalMember signal of
-  "OnProgress" -> scoreTaskWithDifficulty headers Trivial
-  "OnCompleted" -> scoreTaskWithDifficulty headers Easy
-  "OnAllCompleted" -> scoreTaskWithDifficulty headers Hard
+updatePlayerData :: MonadIO m => HabiticaHeaders -> IORef PlayerData -> PlayerData -> m PlayerData
+updatePlayerData headers playerData newPlayerData = liftIO $ do
+  infoLog "Updating playerData to new values"
+  oldPlayerData <- readIORef playerData
+  evenNewerPlayerData <-
+    if playerLevel oldPlayerData /= playerLevel newPlayerData
+      then do
+        infoLog "Level change detected; new 'toNextLevel' required"
+        getInitialPlayerData headers
+      else do
+        infoLog "Subtracting exp gained from exp needed"
+        let expGained = playerExp newPlayerData - playerExp oldPlayerData
+            toNextLevel = (-) <$> playerExpNeeded oldPlayerData <*> pure expGained
+            evenNewerPlayerData = newPlayerData {playerExpNeeded = toNextLevel}
+        pure evenNewerPlayerData
+  modifyIORef' playerData (const evenNewerPlayerData)
+  infoLog $ "New player data: " <> show evenNewerPlayerData
+  pure evenNewerPlayerData
+
+httpConfig :: Req.HttpConfig
+httpConfig =
+  Req.defaultHttpConfig
+    { Req.httpConfigCheckResponse = \_ _ _ -> Nothing
+    }
+
+onHabitProgress :: HabiticaHeaders -> IORef PlayerData -> DBus.Signal -> IO ()
+onHabitProgress headers playerData signal = case DBus.signalMember signal of
+  "OnProgress" -> scoreTaskWithDifficulty headers playerData Trivial
+  "OnCompleted" -> scoreTaskWithDifficulty headers playerData Easy
+  "OnAllCompleted" -> scoreTaskWithDifficulty headers playerData Hard
   _ -> pass
 
 readHabiticaHeaders :: IO HabiticaHeaders
@@ -241,8 +362,10 @@ main = do
   infoLog "Connecting to DBus"
   client <- DBus.connectSession
   headers <- readHabiticaHeaders
+  initialPlayerData <- getInitialPlayerData headers
+  playerData <- newIORef initialPlayerData
   infoLog "Adding listener for DBus signals from habit script"
-  _ <- DBus.addMatch client matchHabit (onHabitProgress headers)
+  _ <- DBus.addMatch client matchHabit (onHabitProgress headers playerData)
   infoLog "Looping forever"
   _ <- forever (threadDelay 1000000)
   infoLog "Shutting down"

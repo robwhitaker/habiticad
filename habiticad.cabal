@@ -11,13 +11,18 @@ copyright:           2021 Rob Whitaker
 category:            Application
 build-type:          Simple
 extra-doc-files:     README.md
-data-files:          assets/images/habitica.png
+data-files:          assets/images/sparkles.png
+                   , assets/images/coin.png
+                   , assets/images/sword.png
 
 common common-options
   build-depends:       aeson
                      , base
                      , dbus
+                     , directory
+                     , exceptions
                      , fdo-notify
+                     , filepath
                      , process
                      , relude
                      , req

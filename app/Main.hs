@@ -4,6 +4,7 @@ module Main (main) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (throwIO)
+import Control.Monad.Catch (MonadThrow, throwM)
 import qualified DBus
 import DBus.Client (MatchRule)
 import qualified DBus.Client as DBus
@@ -11,10 +12,13 @@ import qualified DBus.Notify as Notify
 import Data.Aeson (FromJSON, ToJSON, (.:), (.:?), (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.List as List
+import qualified Data.Text as T
 import Network.HTTP.Req (GET (GET), POST (..), (/:))
 import qualified Network.HTTP.Req as Req
 import Paths_habiticad
+import qualified System.Directory as Dir
 import System.Exit (ExitCode (ExitSuccess))
+import System.FilePath ((</>))
 import System.IO (BufferMode (LineBuffering), hSetBuffering)
 import System.IO.Error (userError)
 import qualified System.Process as Process
@@ -105,8 +109,22 @@ instance FromJSON QuestProgress where
     qpDamage <- o .:? "progressDelta"
     pure QuestProgress {qpCollection, qpDamage}
 
+data Drop = Drop
+  { dropDialog :: Text,
+    dropType :: Text,
+    dropKey :: Text
+  }
+  deriving stock (Show, Eq, Ord)
+
+instance FromJSON Drop where
+  parseJSON = Aeson.withObject "Drop" $ \o -> do
+    dropDialog <- o .: "dialog"
+    dropType <- o .: "type"
+    dropKey <- o .: "key"
+    pure Drop {dropDialog, dropType, dropKey}
+
 data ScoreResult = ScoreResult
-  { scoreDrop :: Maybe Text,
+  { scoreDrop :: Maybe Drop,
     scoreQuestProgress :: Maybe QuestProgress,
     scorePlayerData :: PlayerData
   }
@@ -118,10 +136,7 @@ instance FromJSON ScoreResult where
     (scoreDrop, scoreQuestProgress) <- case mbTmp of
       Nothing -> pure (Nothing, Nothing)
       Just tmp -> do
-        mbDrop <- tmp .:? "drop"
-        scoreDrop <- case mbDrop of
-          Nothing -> pure Nothing
-          Just hdrop -> Just <$> hdrop .: "dialog"
+        scoreDrop <- tmp .:? "drop"
         scoreQuestProgress <- tmp .:? "quest"
         pure (scoreDrop, scoreQuestProgress)
     scorePlayerData <- Aeson.parseJSON (Aeson.Object o)
@@ -150,31 +165,45 @@ mapNotifyBody f = NotifyBody . f . unNotifyBody
 bold :: NotifyBody -> NotifyBody
 bold = mapNotifyBody Notify.Bold
 
+italic :: NotifyBody -> NotifyBody
+italic = mapNotifyBody Notify.Italic
+
 -- MAIN --
 
 notify :: PlayerData -> ScoreResult -> IO ()
 notify oldPlayerData scoreResult = do
   client <- Notify.connectSession
-  iconPath <- getDataFileName "assets/images/habitica.png"
+  sparklePath <- getDataFileName "assets/images/sparkles.png"
+  coinPath <- getDataFileName "assets/images/coin.png"
+  swordPath <- getDataFileName "assets/images/sword.png"
+  let stagger = threadDelay 250000
   case scoreDrop scoreResult of
     Nothing -> pass
-    Just dropText -> void $ Notify.notify client (dropToNote iconPath dropText)
+    Just theDrop -> do
+      dropIconPath <- getDropIconFile theDrop
+      void $ Notify.notify client (dropToNote dropIconPath $ dropDialog theDrop)
+      stagger
   case scoreQuestProgress scoreResult of
     Nothing -> pass
-    Just questProgress -> void $ Notify.notify client (questProgressToNote iconPath questProgress)
-  void $ Notify.notify client (playerDataChanges iconPath)
+    Just questProgress -> do
+      void $ Notify.notify client (questProgressToNote swordPath questProgress)
+      stagger
+  void $ Notify.notify client (playerGoldChangeNote coinPath) >> stagger
+  void $ Notify.notify client (playerExpChangeNote sparklePath)
   where
     dropToNote iconPath dropText =
       Notify.blankNote
         { Notify.appName = "habitica",
           Notify.summary = "Drop received!",
           Notify.appImage = Just (Notify.File iconPath),
-          Notify.body = Just $ Notify.Text (toString dropText)
+          Notify.body =
+            Just (Notify.Text $ toString dropText)
         }
+
     questProgressToNote iconPath QuestProgress {qpCollection, qpDamage} =
       Notify.blankNote
         { Notify.appName = "habitica",
-          Notify.summary = "Quest Progress",
+          Notify.summary = "Quest progress",
           Notify.appImage = Just (Notify.File iconPath),
           Notify.body =
             let collected = case qpCollection of
@@ -185,45 +214,61 @@ notify oldPlayerData scoreResult = do
                   Nothing -> ""
              in Just . unNotifyBody $ collected <> damage
         }
-    playerDataChanges iconPath =
+
+    double :: Double -> Double
+    double n = fromIntegral @Int @Double (floor (n * 100)) / 100
+
+    int :: Double -> Int
+    int = floor
+
+    signed :: (Num a, Ord a, Show a) => a -> NotifyBody
+    signed n =
+      if n >= 0
+        then "+" <> show n
+        else "-" <> show n
+
+    unsigned :: (Show a) => a -> NotifyBody
+    unsigned = show
+
+    prettyNumber :: Double -> NotifyBody
+    prettyNumber num = show @NotifyBody @Double $ fromIntegral @Int (round (num * 100)) / 100
+
+    newPlayerData = scorePlayerData scoreResult
+    newLevel = playerLevel newPlayerData
+
+    playerGoldChangeNote iconPath =
       Notify.blankNote
         { Notify.appName = "habitica",
-          Notify.summary = "Character Progress",
+          Notify.summary = "Gold found!",
           Notify.appImage = Just (Notify.File iconPath),
           Notify.body =
-            let double :: Double -> Double
-                double n = fromIntegral @Int @Double (floor (n * 100)) / 100
-
-                int :: Double -> Int
-                int = floor
-
-                signed :: (Num a, Ord a, Show a) => a -> NotifyBody
-                signed n =
-                  if n >= 0
-                    then "+" <> show n
-                    else "-" <> show n
-
-                unsigned :: (Show a) => a -> NotifyBody
-                unsigned = show
-
-                newPlayerData = scorePlayerData scoreResult
-                newLevel = playerLevel newPlayerData
-
-                goldDiffStr =
-                  (signed . double) (playerGold newPlayerData - playerGold oldPlayerData)
-                    <> " ("
-                    <> (unsigned . int) (playerGold newPlayerData)
-                    <> ")"
-                levelDiff = playerLevel newPlayerData - playerLevel oldPlayerData
+            let goldDiffStr =
+                  bold "Gold: "
+                    <> (signed . double) (playerGold newPlayerData - playerGold oldPlayerData)
+                    <> italic
+                      ( " ("
+                          <> (unsigned . int) (playerGold newPlayerData)
+                          <> ")"
+                      )
+             in Just $ unNotifyBody goldDiffStr
+        }
+    playerExpChangeNote iconPath =
+      Notify.blankNote
+        { Notify.appName = "habitica",
+          Notify.summary = "Experience gained!",
+          Notify.appImage = Just (Notify.File iconPath),
+          Notify.body =
+            let levelDiff = playerLevel newPlayerData - playerLevel oldPlayerData
                 levelProgressStr =
                   case playerExpNeeded newPlayerData of
                     Nothing -> ""
                     Just toNextLevel ->
-                      " ("
-                        <> (unsigned . int) (playerExp newPlayerData)
-                        <> "/"
-                        <> (unsigned . int) (playerExp newPlayerData + toNextLevel)
-                        <> ")"
+                      italic $
+                        " ("
+                          <> (unsigned . int) (playerExp newPlayerData)
+                          <> "/"
+                          <> (unsigned . int) (playerExp newPlayerData + toNextLevel)
+                          <> ")"
                 expDiffStr =
                   if
                       | levelDiff == 0 ->
@@ -234,11 +279,61 @@ notify oldPlayerData scoreResult = do
                         "\n" <> bold "You leveled up!" <> " New level: " <> show newLevel <> "."
                       | otherwise ->
                         "\n" <> bold "You lost a level..." <> " New level: " <> show newLevel <> "."
-             in Just . unNotifyBody $ bold "Gold: " <> goldDiffStr <> "\n" <> expDiffStr
+             in Just $ unNotifyBody expDiffStr
         }
 
-    prettyNumber :: Double -> NotifyBody
-    prettyNumber num = show @NotifyBody @Double $ fromIntegral @Int (round (num * 100)) / 100
+data DropFileData = DropFileData
+  { dropFileGitHubDir :: Text,
+    dropFileName :: Text
+  }
+  deriving stock (Show, Eq, Ord)
+
+getDropIconFile :: Drop -> IO FilePath
+getDropIconFile Drop {dropType, dropKey} = do
+  cache <- Dir.getXdgDirectory Dir.XdgCache "habiticad"
+  dropFileData@DropFileData {dropFileName} <- getDropFileData
+  let dropFilePath = cache </> toString dropFileName
+  unlessM (Dir.doesFileExist dropFilePath) $ do
+    infoLog "[GitHub] Drop icon missing; fetching from GitHub"
+    Dir.createDirectoryIfMissing True cache
+    downloadDropFile dropFilePath dropFileData
+  pure dropFilePath
+  where
+    getDropFileData :: MonadThrow m => m DropFileData
+    getDropFileData = do
+      dropFileGitHubDir <- case dropType of
+        "Food" -> pure "food"
+        "Egg" -> pure "eggs"
+        "HatchingPotion" -> pure "potions"
+        _ ->
+          throwM
+            ( userError $
+                "Unknown drop type received from Habitica: "
+                  <> toString dropType
+            )
+      let dropFileName = "Pet_" <> dropType <> "_" <> dropKey <> ".png"
+      pure DropFileData {dropFileGitHubDir, dropFileName}
+
+    remoteDropUrl :: DropFileData -> Req.Url 'Req.Https
+    remoteDropUrl DropFileData {dropFileGitHubDir, dropFileName} =
+      Req.https "raw.githubusercontent.com"
+        /: "HabitRPG"
+        /: "habitica"
+        /: "develop"
+        /: "website"
+        /: "raw_sprites"
+        /: "spritesmith"
+        /: "stable"
+        /: dropFileGitHubDir
+        /: dropFileName
+
+    downloadDropFile :: FilePath -> DropFileData -> IO ()
+    downloadDropFile dropFilePath dropFileData = do
+      res <-
+        Req.runReq Req.defaultHttpConfig $
+          Req.req GET (remoteDropUrl dropFileData) Req.NoReqBody Req.lbsResponse mempty
+      infoLog $ "Caching drop icon file at: " <> toText dropFilePath
+      writeFileLBS dropFilePath (Req.responseBody res)
 
 newtype PlayerDataFromStats = PlayerDataFromStats PlayerData
 

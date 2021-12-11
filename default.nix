@@ -1,5 +1,5 @@
-{ mkDerivation, aeson, base, dbus, fdo-notify, lib, process, relude
-, req, text
+{ mkDerivation, aeson, base, dbus, directory, exceptions
+, fdo-notify, filepath, lib, process, relude, req, text
 }:
 mkDerivation {
   pname = "habiticad";
@@ -9,7 +9,8 @@ mkDerivation {
   isExecutable = true;
   enableSeparateDataOutput = true;
   executableHaskellDepends = [
-    aeson base dbus fdo-notify process relude req text
+    aeson base dbus directory exceptions fdo-notify filepath process
+    relude req text
   ];
   description = "Daemon that listens for dbus events and launches Habitica requests";
   license = lib.licenses.bsd3;

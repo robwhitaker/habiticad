@@ -225,7 +225,7 @@ notify oldPlayerData scoreResult = do
     signed n =
       if n >= 0
         then "+" <> show n
-        else "-" <> show n
+        else show n
 
     unsigned :: (Show a) => a -> NotifyBody
     unsigned = show

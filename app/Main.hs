@@ -3,7 +3,7 @@
 module Main (main) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (throwIO)
+import Control.Exception (catch, throwIO)
 import Control.Monad.Catch (MonadThrow, throwM)
 import qualified DBus
 import DBus.Client (MatchRule)
@@ -13,7 +13,7 @@ import Data.Aeson (FromJSON, ToJSON, (.:), (.:?), (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.List as List
 import qualified Data.Text as T
-import Network.HTTP.Req (GET (GET), POST (..), (/:))
+import Network.HTTP.Req (GET (GET), HttpException, POST (..), (/:))
 import qualified Network.HTTP.Req as Req
 import Paths_habiticad
 import qualified System.Directory as Dir
@@ -293,11 +293,17 @@ getDropIconFile Drop {dropType, dropKey} = do
   cache <- Dir.getXdgDirectory Dir.XdgCache "habiticad"
   dropFileData@DropFileData {dropFileName} <- getDropFileData
   let dropFilePath = cache </> toString dropFileName
-  unlessM (Dir.doesFileExist dropFilePath) $ do
-    infoLog "[GitHub] Drop icon missing; fetching from GitHub"
-    Dir.createDirectoryIfMissing True cache
-    downloadDropFile dropFilePath dropFileData
-  pure dropFilePath
+  ( do
+      unlessM (Dir.doesFileExist dropFilePath) $ do
+        infoLog "[GitHub] Drop icon missing; fetching from GitHub"
+        Dir.createDirectoryIfMissing True cache
+        downloadDropFile dropFilePath dropFileData
+      pure dropFilePath
+    )
+    `catch` ( \(_ :: HttpException) -> do
+                errorLog "[GitHub] Got bad response. Returning default icon."
+                getDataFileName "assets/images/habitica.png"
+            )
   where
     getDropFileData :: MonadThrow m => m DropFileData
     getDropFileData = do
@@ -319,7 +325,7 @@ getDropIconFile Drop {dropType, dropKey} = do
       Req.https "raw.githubusercontent.com"
         /: "HabitRPG"
         /: "habitica"
-        /: "develop"
+        /: "v4.214.3" -- Individual sprites removed shortly after this version
         /: "website"
         /: "raw_sprites"
         /: "spritesmith"

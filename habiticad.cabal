@@ -11,7 +11,8 @@ copyright:           2021 Rob Whitaker
 category:            Application
 build-type:          Simple
 extra-doc-files:     README.md
-data-files:          assets/images/sparkles.png
+data-files:          assets/images/habitica.png
+                   , assets/images/sparkles.png
                    , assets/images/coin.png
                    , assets/images/sword.png
 
